@@ -1,0 +1,15 @@
+{
+    "author": ["sunfox"],
+    "name": "ChatSummary",
+    "short": "智能聊天频道总结插件",
+    "description": "支持使用 AI 总结 Discord 聊天频道的内容，可以总结指定频道或全部频道，并支持配置定时任务自动生成总结。",
+    "install_msg": "感谢安装 ChatSummary！使用 `[p]summary config` 进行配置，使用 `[p]help summary` 查看所有命令。",
+    "tags": ["chat", "summary", "ai", "utility"],
+    "required_cogs": {},
+    "requirements": ["aiohttp>=3.8.0"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
+
