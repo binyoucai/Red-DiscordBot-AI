@@ -16,7 +16,7 @@
 
 ```bash
 # 添加仓库
-[p]repo add red-ai https://github.com/yourusername/Red-DiscordBot-AI
+[p]repo add red-ai https://github.com/binyoucai/Red-DiscordBot-AI
 
 # 安装插件
 [p]cog install red-ai chatsummary

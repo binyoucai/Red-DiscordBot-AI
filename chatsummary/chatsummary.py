@@ -341,11 +341,175 @@ The Discord content:
         
         return summary
     
+    def _parse_markdown_to_pdf_elements(self, markdown_text: str, styles: dict, use_chinese: bool):
+        """将Markdown文本解析为PDF元素列表
+        
+        参数:
+            markdown_text: Markdown格式的文本
+            styles: PDF样式字典
+            use_chinese: 是否使用中文字体
+        
+        返回:
+            PDF元素列表（Paragraph和Spacer对象）
+        """
+        from reportlab.platypus import Paragraph, Spacer
+        from reportlab.lib.units import cm
+        import re
+        
+        elements = []
+        lines = markdown_text.split('\n')
+        i = 0
+        
+        # 选择样式
+        h1_style = styles.get('ChineseH1', styles['Heading1']) if use_chinese else styles['Heading1']
+        h2_style = styles.get('ChineseH2', styles['Heading2']) if use_chinese else styles['Heading2']
+        h3_style = styles.get('ChineseH3', styles['Heading3']) if use_chinese else styles['Heading3']
+        body_style = styles.get('ChineseBody', styles['BodyText']) if use_chinese else styles['BodyText']
+        
+        max_iterations = len(lines) * 2  # 防止无限循环
+        iteration_count = 0
+        
+        while i < len(lines):
+            iteration_count += 1
+            if iteration_count > max_iterations:
+                log.error(f"Markdown解析超过最大迭代次数，强制退出。当前行: {i}/{len(lines)}")
+                break
+            
+            line = lines[i].strip()
+            
+            # 跳过空行
+            if not line:
+                i += 1
+                continue
+            
+            # 清理XML特殊字符
+            def clean_text(text):
+                return (text.replace('&', '&amp;')
+                           .replace('<', '&lt;')
+                           .replace('>', '&gt;'))
+            
+            # 解析一级标题 # 标题
+            if line.startswith('# ') and not line.startswith('## '):
+                title_text = clean_text(line[2:])
+                elements.append(Paragraph(f"<b>{title_text}</b>", h1_style))
+                elements.append(Spacer(1, 0.3*cm))
+                i += 1
+            
+            # 解析二级标题 ## 标题
+            elif line.startswith('## ') and not line.startswith('### '):
+                title_text = clean_text(line[3:])
+                elements.append(Paragraph(f"<b>{title_text}</b>", h2_style))
+                elements.append(Spacer(1, 0.2*cm))
+                i += 1
+            
+            # 解析三级标题 ### 标题
+            elif line.startswith('### '):
+                title_text = clean_text(line[4:])
+                elements.append(Paragraph(f"<b>{title_text}</b>", h3_style))
+                elements.append(Spacer(1, 0.2*cm))
+                i += 1
+            
+            # 解析列表项 - 或 * 开头
+            elif line.startswith('- ') or line.startswith('* '):
+                # 收集连续的列表项
+                list_items = []
+                while i < len(lines):
+                    current_line = lines[i].strip()
+                    if current_line.startswith('- ') or current_line.startswith('* '):
+                        item_text = clean_text(current_line[2:])
+                        # 处理列表项中的粗体标记
+                        item_text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', item_text)
+                        list_items.append(item_text)
+                        i += 1
+                    elif not current_line:
+                        i += 1
+                        break
+                    else:
+                        break
+                
+                # 生成列表
+                for item in list_items:
+                    elements.append(Paragraph(f"• {item}", body_style))
+                elements.append(Spacer(1, 0.2*cm))
+            
+            # 解析粗体 **文本**
+            elif '**' in line:
+                # 处理粗体标记
+                text = clean_text(line)
+                text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+                elements.append(Paragraph(text, body_style))
+                elements.append(Spacer(1, 0.15*cm))
+                i += 1
+            
+            # 普通段落
+            else:
+                # 收集连续的非空行作为一个段落
+                para_lines = []
+                while i < len(lines):
+                    current_line = lines[i].strip()
+                    if current_line and not current_line.startswith('#') and not current_line.startswith('-') and not current_line.startswith('*'):
+                        para_lines.append(current_line)
+                        i += 1
+                    else:
+                        break
+                
+                if para_lines:
+                    para_text = clean_text(' '.join(para_lines))
+                    # 处理粗体
+                    para_text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', para_text)
+                    elements.append(Paragraph(para_text, body_style))
+                    elements.append(Spacer(1, 0.2*cm))
+                else:
+                    # 如果没有收集到任何段落行，说明遇到了无法处理的行
+                    # 强制跳过以避免无限循环
+                    i += 1
+        
+        return elements
+    
     async def generate_pdf_report(self, guild: discord.Guild, summaries_data: List[Dict], report_title: str) -> str:
-        """生成PDF报告
+        """生成PDF报告（异步包装器）
+        
+        在单独的线程中运行PDF生成，避免阻塞Discord事件循环
         
         参数:
             guild: Discord服务器
+            summaries_data: 总结数据列表
+            report_title: 报告标题
+        
+        返回:
+            PDF文件路径
+        """
+        try:
+            log.info(f"开始生成PDF报告 (Guild: {guild.name}, 频道数: {len(summaries_data)})")
+            
+            # 深拷贝数据以避免线程安全问题
+            import copy
+            summaries_data_copy = copy.deepcopy(summaries_data)
+            
+            # 在线程池中运行同步PDF生成函数
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                self._generate_pdf_report_sync,
+                guild.name,
+                guild.id,
+                summaries_data_copy,
+                report_title
+            )
+            
+            log.info(f"PDF报告生成完成: {result}")
+            return result
+            
+        except Exception as e:
+            log.error(f"异步PDF生成包装器出错: {e}", exc_info=True)
+            return None
+    
+    def _generate_pdf_report_sync(self, guild_name: str, guild_id: int, summaries_data: List[Dict], report_title: str) -> str:
+        """生成PDF报告（同步版本，在单独线程中运行）
+        
+        参数:
+            guild_name: Discord服务器名称
+            guild_id: Discord服务器ID
             summaries_data: 总结数据列表，每项包含 category, channel_name, summary_text, stats
             report_title: 报告标题
         
@@ -353,17 +517,33 @@ The Discord content:
             PDF文件路径
         """
         try:
+            log.info(f"[PDF线程] 开始同步生成PDF (频道数: {len(summaries_data)})")
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib.units import cm
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Flowable
             from reportlab.pdfbase import pdfmetrics
             from reportlab.pdfbase.ttfonts import TTFont
             from reportlab.lib.enums import TA_LEFT, TA_CENTER
             
+            # 创建书签Flowable
+            class BookmarkFlowable(Flowable):
+                """在PDF中添加书签的Flowable"""
+                def __init__(self, title, key):
+                    Flowable.__init__(self)
+                    self.title = title
+                    self.key = key
+                    self.width = 0
+                    self.height = 0
+                
+                def draw(self):
+                    """在当前位置添加书签"""
+                    self.canv.bookmarkPage(self.key)
+                    self.canv.addOutlineEntry(self.title, self.key, level=0)
+            
             # 创建临时文件
             temp_dir = tempfile.gettempdir()
-            pdf_filename = f"summary_{guild.id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+            pdf_filename = f"summary_{guild_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
             pdf_path = os.path.join(temp_dir, pdf_filename)
             
             # 创建PDF文档
@@ -421,6 +601,24 @@ The Discord content:
                                              fontName='Chinese',
                                              fontSize=14,
                                              wordWrap='CJK'))
+                    styles.add(ParagraphStyle(name='ChineseH1',
+                                             parent=styles['Heading1'],
+                                             fontName='Chinese',
+                                             fontSize=16,
+                                             wordWrap='CJK',
+                                             spaceAfter=12))
+                    styles.add(ParagraphStyle(name='ChineseH2',
+                                             parent=styles['Heading2'],
+                                             fontName='Chinese',
+                                             fontSize=13,
+                                             wordWrap='CJK',
+                                             spaceAfter=10))
+                    styles.add(ParagraphStyle(name='ChineseH3',
+                                             parent=styles['Heading3'],
+                                             fontName='Chinese',
+                                             fontSize=11,
+                                             wordWrap='CJK',
+                                             spaceAfter=8))
                     styles.add(ParagraphStyle(name='ChineseBody',
                                              parent=styles['BodyText'],
                                              fontName='Chinese',
@@ -450,54 +648,102 @@ The Discord content:
             story.append(Spacer(1, 0.3*cm))
             
             # 添加服务器信息
-            server_info = f"Server: {guild.name}"
+            server_info = f"Server: {guild_name}"
             story.append(Paragraph(server_info, body_style))
             story.append(Spacer(1, 1*cm))
             
             # 添加每个频道的总结
+            log.info(f"[PDF线程] 开始处理 {len(summaries_data)} 个频道的内容")
             for i, data in enumerate(summaries_data):
-                # 分类和频道标题
-                category = data.get('category', '未知分类')
-                channel_name = data.get('channel_name', '未知频道')
-                title = f"{category} / {channel_name}"
-                story.append(Paragraph(title, heading_style))
-                story.append(Spacer(1, 0.3*cm))
-                
-                # 总结内容
-                summary_text = data.get('summary_text', '无总结内容')
-                # 清理文本，处理XML特殊字符（注意顺序）
-                summary_text = (summary_text
-                               .replace('&', '&amp;')
-                               .replace('<', '&lt;')
-                               .replace('>', '&gt;')
-                               .replace('\n', '<br/>'))  # 保留换行
-                
-                # 分段处理长文本
-                paragraphs = summary_text.split('<br/><br/>')
-                for para in paragraphs:
-                    if para.strip():
-                        story.append(Paragraph(para, body_style))
-                        story.append(Spacer(1, 0.2*cm))
+                try:
+                    # 分类和频道标题
+                    log.info(f"[PDF线程] 正在处理频道 {i+1}/{len(summaries_data)}")
+                    category = data.get('category', '未知分类')
+                    channel_name = data.get('channel_name', '未知频道')
+                    title = f"{category} / {channel_name}"
+                    
+                    log.info(f"[PDF线程] 频道标题: {title}")
+                    
+                    # 添加书签（使用BookmarkFlowable）
+                    log.info(f"[PDF线程] 添加书签")
+                    bookmark_key = f"channel_{i}"
+                    story.append(BookmarkFlowable(title, bookmark_key))
+                    
+                    # 添加频道标题
+                    log.info(f"[PDF线程] 添加标题段落")
+                    story.append(Paragraph(title, heading_style))
+                    story.append(Spacer(1, 0.3*cm))
+                    
+                    # 总结内容 - 使用Markdown解析器
+                    summary_text = data.get('summary_text', '无总结内容')
+                    log.info(f"[PDF线程] 开始解析Markdown，文本长度: {len(summary_text)}")
+                    
+                    # 解析Markdown并添加到story
+                    try:
+                        # 添加超时保护
+                        import signal
+                        
+                        def timeout_handler(signum, frame):
+                            raise TimeoutError("Markdown解析超时")
+                        
+                        # 设置10秒超时（仅在Unix系统上有效）
+                        old_handler = None
+                        try:
+                            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                            signal.alarm(10)
+                        except (AttributeError, ValueError):
+                            # Windows系统不支持SIGALRM，跳过超时设置
+                            pass
+                        
+                        try:
+                            markdown_elements = self._parse_markdown_to_pdf_elements(summary_text, styles, use_chinese)
+                            log.info(f"[PDF线程] Markdown解析完成，生成 {len(markdown_elements)} 个元素")
+                            story.extend(markdown_elements)
+                        finally:
+                            # 取消超时
+                            try:
+                                signal.alarm(0)
+                                if old_handler:
+                                    signal.signal(signal.SIGALRM, old_handler)
+                            except (AttributeError, ValueError):
+                                pass
+                        
+                    except TimeoutError:
+                        log.error(f"[PDF线程] Markdown解析超时 ({title})，使用简单文本")
+                        # 使用简单文本作为备选
+                        clean_text = summary_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        story.append(Paragraph(clean_text[:500] + "...", body_style))
+                    except Exception as e:
+                        log.error(f"[PDF线程] 解析Markdown时出错 ({title}): {e}", exc_info=True)
+                        # 使用简单文本作为备选
+                        clean_text = summary_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        story.append(Paragraph(clean_text[:500] + "...", body_style))
+                    
+                except Exception as e:
+                    log.error(f"[PDF线程] 处理频道 {i+1} 时出错: {e}", exc_info=True)
+                    continue
                 
                 # 统计信息
                 stats = data.get('stats', {})
                 stats_text = f"Messages: {stats.get('message_count', 0)} | Users: {stats.get('user_count', 0)} | Time: {stats.get('time_range', 'N/A')}"
                 story.append(Paragraph(stats_text, body_style))
+                story.append(Spacer(1, 0.3*cm))
                 
                 # 如果不是最后一个，添加分页
                 if i < len(summaries_data) - 1:
                     story.append(PageBreak())
             
             # 生成PDF
+            log.info(f"[PDF线程] 开始构建PDF文档，总元素数: {len(story)}")
             doc.build(story)
-            log.info(f"成功生成PDF报告: {pdf_path}")
+            log.info(f"[PDF线程] 成功生成PDF报告（包含 {len(summaries_data)} 个书签）: {pdf_path}")
             return pdf_path
             
-        except ImportError:
-            log.error("reportlab库未安装，无法生成PDF")
+        except ImportError as e:
+            log.error(f"[PDF线程] reportlab库未安装，无法生成PDF: {e}")
             return None
         except Exception as e:
-            log.error(f"生成PDF时出错: {e}", exc_info=True)
+            log.error(f"[PDF线程] 生成PDF时出错: {e}", exc_info=True)
             return None
     
     @commands.group(name="summary", aliases=["总结"])
