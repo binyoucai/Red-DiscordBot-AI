@@ -9,8 +9,9 @@
 强大的聊天频道总结工具，支持使用 AI 生成高质量的对话摘要。
 
 **主要功能：**
-- 📊 总结指定频道或全部频道
-- ⏰ 配置定时任务自动总结
+- 📊 总结指定频道或全部频道，按分类分组显示
+- ⏰ 支持单频道和全服务器定时任务
+- 📁 智能分类管理，可排除整个分类
 - 🤖 集成 OpenAI API 进行智能分析
 - 📈 详细的统计信息和数据可视化
 - ⚙️ 灵活的配置选项
@@ -62,24 +63,40 @@
 ### 配置定时任务
 
 ```bash
+# 单频道定时任务
 # 每24小时自动总结 #general 频道
 [p]summary schedule add #general 24
 
 # 立即执行一次并开始定时任务
 [p]summary schedule add #chat 12 true
 
+# 全服务器定时任务
+# 每24小时自动总结所有频道
+[p]summary schedule addall 24
+
 # 查看所有定时任务
 [p]summary schedule list
 
 # 手动运行定时任务
 [p]summary schedule run #general
+[p]summary schedule runall
 ```
 
-### 总结所有频道
+### 总结频道
 
 ```bash
-# 管理员可以一键总结所有频道
+# 总结指定频道
+[p]summary channel #general
+
+# 总结特定分类
+[p]summary category 公告区
+
+# 总结所有频道（按分类分组显示）
 [p]summary all
+
+# 排除特定分类
+[p]summary config excludecategory 管理区
+[p]summary config excludecategory 归档
 ```
 
 ## 🛠️ 系统要求

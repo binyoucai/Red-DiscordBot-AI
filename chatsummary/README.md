@@ -5,18 +5,21 @@
 ## ✨ 功能特性
 
 - 📊 **指定频道总结**：总结任意指定的文字频道
-- 🌐 **全服务器总结**：一键总结服务器中的所有频道
-- ⏰ **定时任务**：配置自动定时总结任务
+- 🌐 **全服务器总结**：一键总结服务器中的所有频道，按分类分组显示
+- ⏰ **定时任务**：支持单频道和全服务器定时总结任务
+- 📁 **分类管理**：按频道分类组织总结，支持排除整个分类
 - 🤖 **AI 驱动**：集成 OpenAI API 生成智能总结
 - 📈 **统计分析**：显示消息数量、参与人数、时间范围等
+- 📄 **PDF报告**：自动生成PDF格式的总结报告，方便保存和分享
 - ⚙️ **灵活配置**：丰富的配置选项，满足各种需求
+- 🔧 **排除控制**：可排除特定频道或整个分类
 
 ## 📦 安装
 
 ### 方法一：通过 Red-DiscordBot 命令安装
 
 ```
-[p]repo add red-ai https://github.com/yourusername/Red-DiscordBot-AI
+[p]repo add red-ai https://github.com/binyoucai/Red-DiscordBot-AI
 [p]cog install red-ai chatsummary
 [p]load chatsummary
 ```
@@ -71,13 +74,39 @@
 [p]summary channel #general
 ```
 
-#### `[p]summary all`
-总结服务器中所有文字频道（需要管理员权限）。
+#### `[p]summary all [生成PDF]`
+总结服务器中所有文字频道（需要管理员权限）。默认会自动生成PDF报告。
 
 **示例**：
 ```
+# 总结所有频道并生成PDF（默认）
 [p]summary all
+
+# 总结所有频道但不生成PDF
+[p]summary all false
 ```
+
+#### `[p]summary category <分类名称> [生成PDF]`
+总结指定分类下的所有频道（需要管理员权限）。默认会自动生成PDF报告。
+
+**示例**：
+```
+# 总结"公告区"分类下的所有频道并生成PDF（默认）
+[p]summary category 公告区
+
+# 总结"聊天区"分类并生成PDF
+[p]summary category 聊天区
+
+# 总结未分类的频道但不生成PDF
+[p]summary category 未分类 false
+```
+
+**PDF报告特性**：
+- 📄 自动生成专业的PDF格式报告
+- 🌍 支持中文内容（自动检测系统中文字体）
+- 📊 包含完整的总结内容和统计信息
+- 💾 自动上传到Discord供下载
+- 🗑️ 发送后自动清理临时文件
 
 ### 定时任务管理
 
@@ -107,6 +136,42 @@
 **示例**：
 ```
 [p]summary schedule list
+```
+
+#### `[p]summary schedule addall <间隔小时数> [立即运行]`
+添加定时总结全部频道任务。
+
+**示例**：
+```
+# 每24小时自动总结所有频道
+[p]summary schedule addall 24
+
+# 添加并立即执行第一次
+[p]summary schedule addall 24 true
+```
+
+#### `[p]summary schedule removeall`
+移除全服务器定时总结任务。
+
+**示例**：
+```
+[p]summary schedule removeall
+```
+
+#### `[p]summary schedule run <频道>`
+手动立即执行指定频道的定时总结任务。
+
+**示例**：
+```
+[p]summary schedule run #general
+```
+
+#### `[p]summary schedule runall`
+手动立即执行全服务器定时总结任务。
+
+**示例**：
+```
+[p]summary schedule runall
 ```
 
 ### 配置管理
@@ -180,6 +245,29 @@
 **示例**：
 ```
 [p]summary config include #admin
+```
+
+#### `[p]summary config excludecategory <分类名称>`
+将整个分类添加到排除列表（该分类下的所有频道都不会被总结）。
+
+**示例**：
+```
+# 排除管理员分类
+[p]summary config excludecategory 管理区
+
+# 排除语音频道文字区
+[p]summary config excludecategory 语音频道
+
+# 排除未分类的频道
+[p]summary config excludecategory 未分类
+```
+
+#### `[p]summary config includecategory <分类名称>`
+将分类从排除列表中移除。
+
+**示例**：
+```
+[p]summary config includecategory 管理区
 ```
 
 #### `[p]summary config includebots <true/false>`

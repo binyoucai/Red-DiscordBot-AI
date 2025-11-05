@@ -3,9 +3,12 @@ from redbot.core import commands, Config, checks
 from redbot.core.bot import Red
 from datetime import datetime, timedelta
 import asyncio
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
+from collections import defaultdict
 import json
 import logging
+import os
+import tempfile
 
 log = logging.getLogger("red.chatsummary")
 
@@ -30,6 +33,7 @@ class ChatSummary(commands.Cog):
             "summary_channel": None,
             "scheduled_tasks": {},  # {channel_id: {"interval": hours, "enabled": True}}
             "excluded_channels": [],
+            "excluded_categories": [],  # 排除的分类列表
             "include_bots": False,
         }
         
@@ -84,12 +88,16 @@ class ChatSummary(commands.Cog):
                 if not guild:
                     continue
                 
-                channel = guild.get_channel(channel_id)
-                if not channel:
-                    continue
-                
-                # 执行总结
-                await self._execute_summary(guild, channel)
+                # 检查是否是全服务器总结任务（channel_id 为 0）
+                if channel_id == 0:
+                    # 执行全服务器总结
+                    await self._execute_all_summary(guild)
+                else:
+                    # 执行单个频道总结
+                    channel = guild.get_channel(channel_id)
+                    if not channel:
+                        continue
+                    await self._execute_summary(guild, channel)
                     
             except asyncio.CancelledError:
                 break
@@ -97,7 +105,7 @@ class ChatSummary(commands.Cog):
                 log.error(f"定时任务执行错误 (Guild: {guild_id}, Channel: {channel_id}): {e}", exc_info=True)
     
     async def _execute_summary(self, guild: discord.Guild, channel: discord.TextChannel):
-        """执行总结并发送结果"""
+        """执行单个频道总结并发送结果"""
         try:
             # 生成总结
             summary = await self.generate_channel_summary(channel)
@@ -119,6 +127,87 @@ class ChatSummary(commands.Cog):
         except Exception as e:
             log.error(f"执行总结时出错 (Channel: {channel.name}, Guild: {guild.name}): {e}", exc_info=True)
     
+    async def _is_channel_excluded(self, guild: discord.Guild, channel: discord.TextChannel) -> bool:
+        """检查频道是否应该被排除（基于频道本身或其分类）"""
+        excluded_channels = await self.config.guild(guild).excluded_channels()
+        excluded_categories = await self.config.guild(guild).excluded_categories()
+        
+        # 检查频道是否被排除
+        if channel.id in excluded_channels:
+            return True
+        
+        # 检查分类是否被排除
+        if channel.category and channel.category.name in excluded_categories:
+            return True
+        
+        # 检查未分类频道（如果"未分类"在排除列表中）
+        if not channel.category and "未分类" in excluded_categories:
+            return True
+        
+        return False
+    
+    async def _execute_all_summary(self, guild: discord.Guild):
+        """执行全服务器总结并发送结果"""
+        try:
+            # 按分类分组频道
+            categories_dict = defaultdict(list)
+            
+            for channel in guild.text_channels:
+                # 使用新的检查方法
+                if await self._is_channel_excluded(guild, channel):
+                    continue
+                
+                category_name = channel.category.name if channel.category else "未分类"
+                categories_dict[category_name].append(channel)
+            
+            if not categories_dict:
+                log.warning(f"没有可总结的频道 (Guild: {guild.name})")
+                return
+            
+            # 获取发送目标频道
+            summary_channel_id = await self.config.guild(guild).summary_channel()
+            target_channel = guild.get_channel(summary_channel_id) if summary_channel_id else None
+            
+            if not target_channel:
+                # 如果没有配置总结频道，尝试找一个默认频道
+                target_channel = guild.system_channel or guild.text_channels[0] if guild.text_channels else None
+            
+            if not target_channel:
+                log.error(f"无法找到发送总结的频道 (Guild: {guild.name})")
+                return
+            
+            # 发送报告标题
+            await target_channel.send(f"## 📊 服务器全频道总结报告\n生成时间: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+            
+            total_channels = 0
+            
+            # 按分类名称排序（"未分类"放在最后）
+            sorted_categories = sorted(categories_dict.keys(), key=lambda x: (x == "未分类", x))
+            
+            for category_name in sorted_categories:
+                channels = categories_dict[category_name]
+                
+                # 发送分类标题
+                await target_channel.send(f"\n## 📁 {category_name}\n")
+                
+                # 总结该分类下的所有频道
+                for channel in sorted(channels, key=lambda c: c.position):
+                    try:
+                        summary_embed = await self.generate_channel_summary(channel)
+                        await target_channel.send(embed=summary_embed)
+                        total_channels += 1
+                        log.info(f"成功总结频道 {channel.name} (分类: {category_name}, Guild: {guild.name})")
+                        await asyncio.sleep(1)  # 避免速率限制
+                    except Exception as e:
+                        log.error(f"总结频道 {channel.name} 时出错 (分类: {category_name}, Guild: {guild.name}): {e}", exc_info=True)
+            
+            # 发送完成消息
+            await target_channel.send(f"✅ 定时总结完成！共总结了 {total_channels} 个频道，分布在 {len(categories_dict)} 个分类中。")
+            log.info(f"完成全服务器总结 (Guild: {guild.name}, 总频道数: {total_channels})")
+            
+        except Exception as e:
+            log.error(f"执行全服务器总结时出错 (Guild: {guild.name}): {e}", exc_info=True)
+    
     async def generate_channel_summary(self, channel: discord.TextChannel) -> discord.Embed:
         """生成频道总结"""
         guild = channel.guild
@@ -134,9 +223,12 @@ class ChatSummary(commands.Cog):
         
         messages.reverse()  # 按时间顺序排列
         
+        # 获取频道分类
+        category_name = channel.category.name if channel.category else "未分类"
+        
         if not messages:
             embed = discord.Embed(
-                title=f"📊 频道总结 - {channel.name}",
+                title=f"📊 频道总结 - {category_name} / {channel.name}",
                 description="没有找到消息记录。",
                 color=discord.Color.blue(),
                 timestamp=datetime.utcnow()
@@ -151,7 +243,7 @@ class ChatSummary(commands.Cog):
         time_range = f"{messages[0].created_at.strftime('%Y-%m-%d %H:%M')} - {messages[-1].created_at.strftime('%Y-%m-%d %H:%M')}"
         
         embed = discord.Embed(
-            title=f"📊 频道总结 - {channel.name}",
+            title=f"📊 频道总结 - {category_name} / {channel.name}",
             description=summary_text,
             color=discord.Color.green(),
             timestamp=datetime.utcnow()
@@ -193,16 +285,17 @@ class ChatSummary(commands.Cog):
                 "Content-Type": "application/json"
             }
             
-            prompt = f"""请总结以下Discord频道的聊天记录，用中文回答：
+            prompt = f"""You are an **expert in summarizing Discord content**, skilled at extracting key information and generating **high-quality, well-structured summaries**.
+Based on the provided Video Transcript, complete the following tasks:
 
-{message_text[:4000]}
+**Task Description:**
+Act as a helpful assistant. Your task is to summarize the key points from [meeting notes]. The summary should be concise yet comprehensive, capturing the essence of the meeting. Your summary should enable someone who wasn't present at the meeting to understand its outcomes and next steps clearly.Length: - Ensure the response has a minimum of 800 words
 
-请提供：
-1. 主要讨论话题
-2. 重要内容摘要
-3. 关键结论或决定
+Language: - The entire output, including **section titles and labels**, must be written in the "简体中文" language (For example, Summary, Highlights, Key Insights, Outline, Core Concepts, Keywords, FAQ, etc. all need to be translated into 简体中文 language.).
+- Do **not** include any separators (`---`), or additional text outside of the task results.
 
-保持简洁，不超过300字。"""
+The Discord content:
+{message_text[:4000]}"""
             
             data = {
                 "model": model,
@@ -248,6 +341,165 @@ class ChatSummary(commands.Cog):
         
         return summary
     
+    async def generate_pdf_report(self, guild: discord.Guild, summaries_data: List[Dict], report_title: str) -> str:
+        """生成PDF报告
+        
+        参数:
+            guild: Discord服务器
+            summaries_data: 总结数据列表，每项包含 category, channel_name, summary_text, stats
+            report_title: 报告标题
+        
+        返回:
+            PDF文件路径
+        """
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            from reportlab.lib.enums import TA_LEFT, TA_CENTER
+            
+            # 创建临时文件
+            temp_dir = tempfile.gettempdir()
+            pdf_filename = f"summary_{guild.id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+            pdf_path = os.path.join(temp_dir, pdf_filename)
+            
+            # 创建PDF文档
+            doc = SimpleDocTemplate(pdf_path, pagesize=A4,
+                                   rightMargin=2*cm, leftMargin=2*cm,
+                                   topMargin=2*cm, bottomMargin=2*cm)
+            
+            story = []
+            styles = getSampleStyleSheet()
+            
+            # 尝试注册中文字体（如果失败则使用默认字体）
+            try:
+                # 常见的中文字体路径（包括TTC和TTF文件）
+                chinese_fonts = [
+                    # macOS
+                    ('/System/Library/Fonts/PingFang.ttc', 0),
+                    ('/System/Library/Fonts/STHeiti Light.ttc', 0),
+                    ('/System/Library/Fonts/Hiragino Sans GB.ttc', 0),
+                    # Linux
+                    ('/usr/share/fonts/truetype/arphic/uming.ttc', 0),
+                    ('/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf', None),
+                    ('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc', 0),
+                    # Windows
+                    ('C:\\Windows\\Fonts\\msyh.ttc', 0),
+                    ('C:\\Windows\\Fonts\\simhei.ttf', None),
+                    ('C:\\Windows\\Fonts\\simsun.ttc', 0),
+                ]
+                
+                font_registered = False
+                for font_path, subfont_index in chinese_fonts:
+                    if os.path.exists(font_path):
+                        try:
+                            # TTC文件需要指定subfontIndex
+                            if subfont_index is not None:
+                                pdfmetrics.registerFont(TTFont('Chinese', font_path, subfontIndex=subfont_index))
+                            else:
+                                pdfmetrics.registerFont(TTFont('Chinese', font_path))
+                            font_registered = True
+                            log.info(f"成功注册中文字体: {font_path}")
+                            break
+                        except Exception as e:
+                            log.debug(f"尝试注册字体 {font_path} 失败: {e}")
+                            continue
+                
+                if font_registered:
+                    # 创建中文样式
+                    styles.add(ParagraphStyle(name='ChineseTitle',
+                                             parent=styles['Heading1'],
+                                             fontName='Chinese',
+                                             fontSize=18,
+                                             alignment=TA_CENTER,
+                                             wordWrap='CJK'))
+                    styles.add(ParagraphStyle(name='ChineseHeading',
+                                             parent=styles['Heading2'],
+                                             fontName='Chinese',
+                                             fontSize=14,
+                                             wordWrap='CJK'))
+                    styles.add(ParagraphStyle(name='ChineseBody',
+                                             parent=styles['BodyText'],
+                                             fontName='Chinese',
+                                             fontSize=10,
+                                             wordWrap='CJK',
+                                             leading=14))
+                    use_chinese = True
+                else:
+                    log.warning("未找到可用的中文字体，PDF将使用默认字体（中文可能显示为方块）")
+                    use_chinese = False
+            except Exception as e:
+                log.error(f"注册中文字体时出错: {e}", exc_info=True)
+                use_chinese = False
+            
+            # 选择样式
+            title_style = styles['ChineseTitle'] if use_chinese else styles['Title']
+            heading_style = styles['ChineseHeading'] if use_chinese else styles['Heading2']
+            body_style = styles['ChineseBody'] if use_chinese else styles['BodyText']
+            
+            # 添加标题
+            story.append(Paragraph(report_title, title_style))
+            story.append(Spacer(1, 0.5*cm))
+            
+            # 添加生成时间
+            gen_time = f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+            story.append(Paragraph(gen_time, body_style))
+            story.append(Spacer(1, 0.3*cm))
+            
+            # 添加服务器信息
+            server_info = f"Server: {guild.name}"
+            story.append(Paragraph(server_info, body_style))
+            story.append(Spacer(1, 1*cm))
+            
+            # 添加每个频道的总结
+            for i, data in enumerate(summaries_data):
+                # 分类和频道标题
+                category = data.get('category', '未知分类')
+                channel_name = data.get('channel_name', '未知频道')
+                title = f"{category} / {channel_name}"
+                story.append(Paragraph(title, heading_style))
+                story.append(Spacer(1, 0.3*cm))
+                
+                # 总结内容
+                summary_text = data.get('summary_text', '无总结内容')
+                # 清理文本，处理XML特殊字符（注意顺序）
+                summary_text = (summary_text
+                               .replace('&', '&amp;')
+                               .replace('<', '&lt;')
+                               .replace('>', '&gt;')
+                               .replace('\n', '<br/>'))  # 保留换行
+                
+                # 分段处理长文本
+                paragraphs = summary_text.split('<br/><br/>')
+                for para in paragraphs:
+                    if para.strip():
+                        story.append(Paragraph(para, body_style))
+                        story.append(Spacer(1, 0.2*cm))
+                
+                # 统计信息
+                stats = data.get('stats', {})
+                stats_text = f"Messages: {stats.get('message_count', 0)} | Users: {stats.get('user_count', 0)} | Time: {stats.get('time_range', 'N/A')}"
+                story.append(Paragraph(stats_text, body_style))
+                
+                # 如果不是最后一个，添加分页
+                if i < len(summaries_data) - 1:
+                    story.append(PageBreak())
+            
+            # 生成PDF
+            doc.build(story)
+            log.info(f"成功生成PDF报告: {pdf_path}")
+            return pdf_path
+            
+        except ImportError:
+            log.error("reportlab库未安装，无法生成PDF")
+            return None
+        except Exception as e:
+            log.error(f"生成PDF时出错: {e}", exc_info=True)
+            return None
+    
     @commands.group(name="summary", aliases=["总结"])
     @commands.guild_only()
     async def summary(self, ctx: commands.Context):
@@ -274,29 +526,30 @@ class ChatSummary(commands.Cog):
     
     @summary.command(name="all", aliases=["全部", "全部频道"])
     @checks.admin_or_permissions(manage_guild=True)
-    async def summary_all(self, ctx: commands.Context):
-        """总结服务器中所有文字频道（需要管理员权限）"""
+    async def summary_all(self, ctx: commands.Context, generate_pdf: bool = True):
+        """总结服务器中所有文字频道（需要管理员权限）
+        
+        参数:
+            generate_pdf: 是否生成PDF文件（默认为 True）
+        """
         if not await self.config.guild(ctx.guild).enabled():
             await ctx.send("❌ 聊天总结功能未启用。")
             return
         
-        excluded_channels = await self.config.guild(ctx.guild).excluded_channels()
-        
         await ctx.send("🔄 开始总结所有频道，这可能需要一些时间...")
         
-        summaries = []
+        # 按分类分组频道
+        categories_dict = defaultdict(list)
+        
         for channel in ctx.guild.text_channels:
-            if channel.id in excluded_channels:
+            # 使用新的检查方法
+            if await self._is_channel_excluded(ctx.guild, channel):
                 continue
             
-            try:
-                summary_embed = await self.generate_channel_summary(channel)
-                summaries.append(summary_embed)
-                log.info(f"成功总结频道 {channel.name} (Guild: {ctx.guild.name})")
-            except Exception as e:
-                log.error(f"总结频道 {channel.name} 时出错 (Guild: {ctx.guild.name}): {e}", exc_info=True)
+            category_name = channel.category.name if channel.category else "未分类"
+            categories_dict[category_name].append(channel)
         
-        if not summaries:
+        if not categories_dict:
             await ctx.send("❌ 没有可总结的频道。")
             return
         
@@ -306,11 +559,181 @@ class ChatSummary(commands.Cog):
         
         await target_channel.send(f"## 📊 服务器全频道总结报告\n生成时间: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
-        for embed in summaries:
-            await target_channel.send(embed=embed)
-            await asyncio.sleep(1)  # 避免速率限制
+        total_channels = 0
+        summaries_data = []  # 收集PDF数据
         
-        await ctx.send(f"✅ 总结完成！共总结了 {len(summaries)} 个频道。")
+        # 按分类名称排序（"未分类"放在最后）
+        sorted_categories = sorted(categories_dict.keys(), key=lambda x: (x == "未分类", x))
+        
+        for category_name in sorted_categories:
+            channels = categories_dict[category_name]
+            
+            # 发送分类标题
+            await target_channel.send(f"\n## 📁 {category_name}\n")
+            
+            # 总结该分类下的所有频道
+            for channel in sorted(channels, key=lambda c: c.position):
+                try:
+                    summary_embed = await self.generate_channel_summary(channel)
+                    await target_channel.send(embed=summary_embed)
+                    total_channels += 1
+                    
+                    # 收集PDF数据
+                    if generate_pdf:
+                        # 从embed提取数据
+                        summary_text = summary_embed.description or "无总结内容"
+                        stats = {}
+                        for field in summary_embed.fields:
+                            if "消息数量" in field.name:
+                                stats['message_count'] = field.value
+                            elif "参与人数" in field.name:
+                                stats['user_count'] = field.value
+                            elif "时间范围" in field.name:
+                                stats['time_range'] = field.value
+                        
+                        summaries_data.append({
+                            'category': category_name,
+                            'channel_name': channel.name,
+                            'summary_text': summary_text,
+                            'stats': stats
+                        })
+                    
+                    log.info(f"成功总结频道 {channel.name} (分类: {category_name}, Guild: {ctx.guild.name})")
+                    await asyncio.sleep(1)  # 避免速率限制
+                except Exception as e:
+                    log.error(f"总结频道 {channel.name} 时出错 (分类: {category_name}, Guild: {ctx.guild.name}): {e}", exc_info=True)
+        
+        await ctx.send(f"✅ 总结完成！共总结了 {total_channels} 个频道，分布在 {len(categories_dict)} 个分类中。")
+        
+        # 生成并发送PDF
+        if generate_pdf and summaries_data:
+            await ctx.send("📄 正在生成PDF报告...")
+            report_title = f"{ctx.guild.name} - Server Summary Report"
+            pdf_path = await self.generate_pdf_report(ctx.guild, summaries_data, report_title)
+            
+            if pdf_path and os.path.exists(pdf_path):
+                try:
+                    await target_channel.send(
+                        "📊 总结报告PDF文件：",
+                        file=discord.File(pdf_path, filename=f"summary_{ctx.guild.name}_{datetime.utcnow().strftime('%Y%m%d')}.pdf")
+                    )
+                    log.info(f"成功发送PDF报告 (Guild: {ctx.guild.name})")
+                    # 删除临时文件
+                    os.remove(pdf_path)
+                except Exception as e:
+                    log.error(f"发送PDF文件时出错: {e}", exc_info=True)
+                    await ctx.send("❌ PDF文件生成成功但发送失败。")
+            else:
+                await ctx.send("❌ PDF文件生成失败。请检查日志。")
+    
+    @summary.command(name="category", aliases=["分类"])
+    @checks.admin_or_permissions(manage_guild=True)
+    async def summary_category(self, ctx: commands.Context, category_name: str, generate_pdf: bool = True):
+        """总结指定分类下的所有频道（需要管理员权限）
+        
+        参数:
+            category_name: 分类名称（使用"未分类"总结没有分类的频道）
+            generate_pdf: 是否生成PDF文件（默认为 True）
+        """
+        if not await self.config.guild(ctx.guild).enabled():
+            await ctx.send("❌ 聊天总结功能未启用。")
+            return
+        
+        # 查找分类下的频道
+        channels_in_category = []
+        
+        if category_name == "未分类":
+            # 收集所有未分类的频道
+            for channel in ctx.guild.text_channels:
+                if not channel.category:
+                    # 检查是否被排除
+                    if not await self._is_channel_excluded(ctx.guild, channel):
+                        channels_in_category.append(channel)
+        else:
+            # 查找指定分类
+            target_category = None
+            for category in ctx.guild.categories:
+                if category.name == category_name:
+                    target_category = category
+                    break
+            
+            if not target_category:
+                await ctx.send(f"❌ 找不到名为 `{category_name}` 的分类。")
+                return
+            
+            # 收集该分类下的所有文字频道
+            for channel in target_category.text_channels:
+                # 检查是否被排除
+                if not await self._is_channel_excluded(ctx.guild, channel):
+                    channels_in_category.append(channel)
+        
+        if not channels_in_category:
+            await ctx.send(f"❌ 分类 `{category_name}` 中没有可总结的频道。")
+            return
+        
+        await ctx.send(f"🔄 开始总结分类 `{category_name}`，共 {len(channels_in_category)} 个频道...")
+        
+        # 发送到指定频道或当前频道
+        summary_channel_id = await self.config.guild(ctx.guild).summary_channel()
+        target_channel = ctx.guild.get_channel(summary_channel_id) if summary_channel_id else ctx.channel
+        
+        # 发送分类标题
+        await target_channel.send(f"## 📊 分类总结 - {category_name}\n生成时间: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        
+        summaries_data = []  # 收集PDF数据
+        
+        # 按频道位置排序并总结
+        for channel in sorted(channels_in_category, key=lambda c: c.position):
+            try:
+                summary_embed = await self.generate_channel_summary(channel)
+                await target_channel.send(embed=summary_embed)
+                
+                # 收集PDF数据
+                if generate_pdf:
+                    summary_text = summary_embed.description or "无总结内容"
+                    stats = {}
+                    for field in summary_embed.fields:
+                        if "消息数量" in field.name:
+                            stats['message_count'] = field.value
+                        elif "参与人数" in field.name:
+                            stats['user_count'] = field.value
+                        elif "时间范围" in field.name:
+                            stats['time_range'] = field.value
+                    
+                    summaries_data.append({
+                        'category': category_name,
+                        'channel_name': channel.name,
+                        'summary_text': summary_text,
+                        'stats': stats
+                    })
+                
+                log.info(f"成功总结频道 {channel.name} (分类: {category_name}, Guild: {ctx.guild.name})")
+                await asyncio.sleep(1)  # 避免速率限制
+            except Exception as e:
+                log.error(f"总结频道 {channel.name} 时出错 (分类: {category_name}, Guild: {ctx.guild.name}): {e}", exc_info=True)
+        
+        await ctx.send(f"✅ 分类 `{category_name}` 总结完成！共总结了 {len(channels_in_category)} 个频道。")
+        
+        # 生成并发送PDF
+        if generate_pdf and summaries_data:
+            await ctx.send("📄 正在生成PDF报告...")
+            report_title = f"{ctx.guild.name} - {category_name} Summary Report"
+            pdf_path = await self.generate_pdf_report(ctx.guild, summaries_data, report_title)
+            
+            if pdf_path and os.path.exists(pdf_path):
+                try:
+                    await target_channel.send(
+                        "📊 总结报告PDF文件：",
+                        file=discord.File(pdf_path, filename=f"summary_{category_name}_{datetime.utcnow().strftime('%Y%m%d')}.pdf")
+                    )
+                    log.info(f"成功发送PDF报告 (分类: {category_name}, Guild: {ctx.guild.name})")
+                    # 删除临时文件
+                    os.remove(pdf_path)
+                except Exception as e:
+                    log.error(f"发送PDF文件时出错: {e}", exc_info=True)
+                    await ctx.send("❌ PDF文件生成成功但发送失败。")
+            else:
+                await ctx.send("❌ PDF文件生成失败。请检查日志。")
     
     @summary.group(name="schedule", aliases=["定时", "任务"])
     @checks.admin_or_permissions(manage_guild=True)
@@ -354,6 +777,45 @@ class ChatSummary(commands.Cog):
         else:
             await ctx.send(message)
     
+    @schedule.command(name="addall", aliases=["添加全部", "新增全部"])
+    async def schedule_addall(self, ctx: commands.Context, interval_hours: int, run_now: bool = False):
+        """添加定时总结全部频道任务
+        
+        参数:
+            interval_hours: 总结间隔（小时）
+            run_now: 是否立即执行一次总结（默认为 False）
+        """
+        if interval_hours < 1:
+            await ctx.send("❌ 间隔时间必须至少为 1 小时。")
+            return
+        
+        async with self.config.guild(ctx.guild).scheduled_tasks() as tasks:
+            tasks["0"] = {
+                "interval": interval_hours,
+                "enabled": True,
+                "channel_name": "全部频道",
+                "is_all": True
+            }
+        
+        # 启动定时任务（使用 channel_id = 0 表示全服务器）
+        self.start_scheduled_task(ctx.guild.id, 0, interval_hours)
+        
+        message = f"✅ 已添加定时任务：每 {interval_hours} 小时总结全部频道"
+        
+        # 如果指定立即执行
+        if run_now:
+            message += "\n🔄 正在立即执行第一次全部频道总结..."
+            await ctx.send(message)
+            try:
+                async with ctx.typing():
+                    await self._execute_all_summary(ctx.guild)
+            except Exception as e:
+                log.warning(f"无法发送 typing 状态: {e}")
+                await self._execute_all_summary(ctx.guild)
+            await ctx.send(f"✅ 首次全部频道总结已完成！")
+        else:
+            await ctx.send(message)
+    
     @schedule.command(name="remove", aliases=["删除", "移除"])
     async def schedule_remove(self, ctx: commands.Context, channel: discord.TextChannel):
         """移除定时总结任务
@@ -375,6 +837,23 @@ class ChatSummary(commands.Cog):
             else:
                 await ctx.send(f"❌ 频道 {channel.mention} 没有配置定时任务。")
     
+    @schedule.command(name="removeall", aliases=["删除全部", "移除全部"])
+    async def schedule_removeall(self, ctx: commands.Context):
+        """移除定时总结全部频道任务"""
+        async with self.config.guild(ctx.guild).scheduled_tasks() as tasks:
+            if "0" in tasks:
+                del tasks["0"]
+                
+                # 取消任务
+                task_key = f"{ctx.guild.id}_0"
+                if task_key in self.scheduled_jobs:
+                    self.scheduled_jobs[task_key].cancel()
+                    del self.scheduled_jobs[task_key]
+                
+                await ctx.send(f"✅ 已移除全部频道的定时任务。")
+            else:
+                await ctx.send(f"❌ 没有配置全部频道的定时任务。")
+    
     @schedule.command(name="list", aliases=["列表", "查看"])
     async def schedule_list(self, ctx: commands.Context):
         """查看所有定时任务"""
@@ -391,8 +870,13 @@ class ChatSummary(commands.Cog):
         )
         
         for channel_id_str, task_config in tasks.items():
-            channel = ctx.guild.get_channel(int(channel_id_str))
-            channel_name = channel.mention if channel else task_config.get("channel_name", "未知频道")
+            # 检查是否是全服务器任务
+            if channel_id_str == "0":
+                channel_name = "🌐 全部频道"
+            else:
+                channel = ctx.guild.get_channel(int(channel_id_str))
+                channel_name = channel.mention if channel else task_config.get("channel_name", "未知频道")
+            
             interval = task_config.get("interval", "未知")
             enabled = "✅ 启用" if task_config.get("enabled", False) else "❌ 禁用"
             
@@ -418,9 +902,31 @@ class ChatSummary(commands.Cog):
             return
         
         await ctx.send(f"🔄 正在为 {channel.mention} 生成总结...")
-        async with ctx.typing():
+        try:
+            async with ctx.typing():
+                await self._execute_summary(ctx.guild, channel)
+        except Exception as e:
+            log.warning(f"无法发送 typing 状态: {e}")
             await self._execute_summary(ctx.guild, channel)
         await ctx.send(f"✅ 总结已完成！")
+    
+    @schedule.command(name="runall", aliases=["运行全部", "执行全部"])
+    async def schedule_runall(self, ctx: commands.Context):
+        """手动立即执行全部频道的定时总结任务"""
+        tasks = await self.config.guild(ctx.guild).scheduled_tasks()
+        
+        if "0" not in tasks:
+            await ctx.send(f"❌ 没有配置全部频道的定时任务。")
+            return
+        
+        await ctx.send(f"🔄 正在生成全部频道总结，这可能需要一些时间...")
+        try:
+            async with ctx.typing():
+                await self._execute_all_summary(ctx.guild)
+        except Exception as e:
+            log.warning(f"无法发送 typing 状态: {e}")
+            await self._execute_all_summary(ctx.guild)
+        await ctx.send(f"✅ 全部频道总结已完成！")
     
     @summary.group(name="config", aliases=["配置", "设置"])
     @checks.admin_or_permissions(manage_guild=True)
@@ -534,6 +1040,45 @@ class ChatSummary(commands.Cog):
             else:
                 await ctx.send(f"❌ {channel.mention} 不在排除列表中。")
     
+    @config_group.command(name="excludecategory", aliases=["排除分类"])
+    async def config_exclude_category(self, ctx: commands.Context, *, category_name: str):
+        """将整个分类添加到排除列表（该分类下的所有频道不会被总结）
+        
+        参数:
+            category_name: 要排除的分类名称（使用"未分类"排除没有分类的频道）
+        """
+        # 检查分类是否存在
+        category_exists = False
+        if category_name == "未分类":
+            category_exists = any(not ch.category for ch in ctx.guild.text_channels)
+        else:
+            category_exists = any(cat.name == category_name for cat in ctx.guild.categories)
+        
+        if not category_exists:
+            await ctx.send(f"❌ 找不到名为 `{category_name}` 的分类。")
+            return
+        
+        async with self.config.guild(ctx.guild).excluded_categories() as excluded:
+            if category_name not in excluded:
+                excluded.append(category_name)
+                await ctx.send(f"✅ 已将分类 `{category_name}` 添加到排除列表。")
+            else:
+                await ctx.send(f"❌ 分类 `{category_name}` 已在排除列表中。")
+    
+    @config_group.command(name="includecategory", aliases=["包含分类"])
+    async def config_include_category(self, ctx: commands.Context, *, category_name: str):
+        """将分类从排除列表中移除
+        
+        参数:
+            category_name: 要包含的分类名称
+        """
+        async with self.config.guild(ctx.guild).excluded_categories() as excluded:
+            if category_name in excluded:
+                excluded.remove(category_name)
+                await ctx.send(f"✅ 已将分类 `{category_name}` 从排除列表移除。")
+            else:
+                await ctx.send(f"❌ 分类 `{category_name}` 不在排除列表中。")
+    
     @config_group.command(name="includebots", aliases=["包含机器人"])
     async def config_includebots(self, ctx: commands.Context, include: bool):
         """设置是否包含机器人消息
@@ -561,7 +1106,10 @@ class ChatSummary(commands.Cog):
             for ch_id in config["excluded_channels"] 
             if ctx.guild.get_channel(ch_id)
         ]
-        excluded_text = ", ".join(excluded_channels) if excluded_channels else "无"
+        excluded_channels_text = ", ".join(excluded_channels) if excluded_channels else "无"
+        
+        excluded_categories = config.get("excluded_categories", [])
+        excluded_categories_text = ", ".join([f"`{cat}`" for cat in excluded_categories]) if excluded_categories else "无"
         
         embed = discord.Embed(
             title="⚙️ 聊天总结配置",
@@ -576,8 +1124,95 @@ class ChatSummary(commands.Cog):
         embed.add_field(name="最大消息数", value=str(config["max_messages"]), inline=True)
         embed.add_field(name="包含机器人", value="是" if config["include_bots"] else "否", inline=True)
         embed.add_field(name="总结发送频道", value=summary_channel_text, inline=True)
-        embed.add_field(name="排除频道", value=excluded_text, inline=False)
+        embed.add_field(name="排除频道", value=excluded_channels_text, inline=False)
+        embed.add_field(name="排除分类", value=excluded_categories_text, inline=False)
         embed.add_field(name="定时任务数", value=str(len(config["scheduled_tasks"])), inline=True)
+        
+        await ctx.send(embed=embed)
+    
+    @config_group.command(name="testfont", aliases=["测试字体"])
+    async def config_testfont(self, ctx: commands.Context):
+        """测试系统中文字体可用性"""
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        
+        # 测试字体列表
+        chinese_fonts = [
+            # macOS
+            ('/System/Library/Fonts/PingFang.ttc', 0, 'macOS PingFang'),
+            ('/System/Library/Fonts/STHeiti Light.ttc', 0, 'macOS STHeiti'),
+            ('/System/Library/Fonts/Hiragino Sans GB.ttc', 0, 'macOS Hiragino'),
+            # Linux
+            ('/usr/share/fonts/truetype/arphic/uming.ttc', 0, 'Linux AR PL UMing'),
+            ('/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf', None, 'Linux Droid Sans'),
+            ('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc', 0, 'Linux WenQuanYi'),
+            # Windows
+            ('C:\\Windows\\Fonts\\msyh.ttc', 0, 'Windows 微软雅黑'),
+            ('C:\\Windows\\Fonts\\simhei.ttf', None, 'Windows 黑体'),
+            ('C:\\Windows\\Fonts\\simsun.ttc', 0, 'Windows 宋体'),
+        ]
+        
+        embed = discord.Embed(
+            title="🔤 中文字体检测",
+            description="检测系统中可用的PDF中文字体",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        found_fonts = []
+        available_fonts = []
+        
+        for font_path, subfont_index, font_name in chinese_fonts:
+            if os.path.exists(font_path):
+                found_fonts.append(f"✅ {font_name}\n路径: `{font_path}`")
+                
+                # 尝试注册测试
+                try:
+                    test_name = f"Test_{len(available_fonts)}"
+                    if subfont_index is not None:
+                        pdfmetrics.registerFont(TTFont(test_name, font_path, subfontIndex=subfont_index))
+                    else:
+                        pdfmetrics.registerFont(TTFont(test_name, font_path))
+                    available_fonts.append(font_name)
+                except Exception as e:
+                    found_fonts[-1] += f"\n⚠️ 注册失败: {str(e)[:50]}"
+        
+        if found_fonts:
+            embed.add_field(
+                name="找到的字体",
+                value="\n\n".join(found_fonts),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="找到的字体",
+                value="❌ 未找到任何中文字体",
+                inline=False
+            )
+        
+        if available_fonts:
+            embed.add_field(
+                name="✅ 可用于PDF",
+                value=", ".join(available_fonts),
+                inline=False
+            )
+            embed.color = discord.Color.green()
+        else:
+            embed.add_field(
+                name="❌ PDF生成问题",
+                value="未找到可用的中文字体，PDF中的中文将显示为方块",
+                inline=False
+            )
+            embed.color = discord.Color.red()
+        
+        embed.add_field(
+            name="💡 解决方法",
+            value="如果没有找到字体，请安装中文字体包：\n"
+                  "• macOS: 已内置中文字体\n"
+                  "• Linux: `sudo apt-get install fonts-arphic-uming`\n"
+                  "• Windows: 确保安装了微软雅黑字体",
+            inline=False
+        )
         
         await ctx.send(embed=embed)
 

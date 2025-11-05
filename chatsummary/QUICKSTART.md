@@ -76,22 +76,57 @@
 [p]summary config includebots false
 ```
 
-### 场景 4：周报生成
+### 场景 4：周报自动生成
 
-**需求**：每周五下午生成本周所有频道的总结
+**需求**：每周自动生成全服务器总结报告
 
 **设置**：
 ```bash
-# 每168小时（7天）运行一次
-[p]summary schedule add #general 168
-[p]summary schedule add #announcements 168
-[p]summary schedule add #discussion 168
+# 每168小时（7天）自动总结所有频道
+[p]summary schedule addall 168
+
+# 配置总结发送到专门的周报频道
+[p]summary config summarychannel #weekly-reports
 
 # 或者手动触发周报
 [p]summary all
 ```
 
-### 场景 5：使用第三方 API 服务
+### 场景 5：只总结特定分类
+
+**需求**：只想看公告区的总结，不需要其他分类
+
+**设置**：
+```bash
+# 直接总结指定分类
+[p]summary category 公告区
+
+# 或者总结聊天区
+[p]summary category 聊天区
+
+# 总结未分类的频道
+[p]summary category 未分类
+```
+
+### 场景 6：排除特定分类
+
+**需求**：总结所有频道，但排除管理员和归档分类
+
+**设置**：
+```bash
+# 排除整个分类（比逐个排除频道更高效）
+[p]summary config excludecategory 管理区
+[p]summary config excludecategory 归档
+[p]summary config excludecategory 语音频道
+
+# 查看配置
+[p]summary config show
+
+# 现在运行全服务器总结
+[p]summary all
+```
+
+### 场景 7：使用第三方 API 服务
 
 **需求**：使用国内 API 代理或 Azure OpenAI
 
@@ -116,17 +151,22 @@
 |------|------|------|
 | `[p]summary channel` | 总结当前频道 | `[p]summary channel` |
 | `[p]summary channel #频道名` | 总结指定频道 | `[p]summary channel #general` |
+| `[p]summary category 分类名` | 总结指定分类 | `[p]summary category 公告区` |
 | `[p]summary all` | 总结所有频道 | `[p]summary all` |
 
 ### 定时任务管理
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
-| `[p]summary schedule add` | 添加定时任务 | `[p]summary schedule add #chat 24` |
+| `[p]summary schedule add` | 添加单频道定时任务 | `[p]summary schedule add #chat 24` |
 | `[p]summary schedule add ... true` | 添加并立即运行 | `[p]summary schedule add #chat 24 true` |
-| `[p]summary schedule remove` | 删除定时任务 | `[p]summary schedule remove #chat` |
+| `[p]summary schedule addall` | 添加全服务器定时任务 | `[p]summary schedule addall 24` |
+| `[p]summary schedule addall ... true` | 添加全服务器任务并立即运行 | `[p]summary schedule addall 24 true` |
+| `[p]summary schedule remove` | 删除单频道定时任务 | `[p]summary schedule remove #chat` |
+| `[p]summary schedule removeall` | 删除全服务器定时任务 | `[p]summary schedule removeall` |
 | `[p]summary schedule list` | 查看所有任务 | `[p]summary schedule list` |
-| `[p]summary schedule run` | 手动运行任务 | `[p]summary schedule run #chat` |
+| `[p]summary schedule run` | 手动运行单频道任务 | `[p]summary schedule run #chat` |
+| `[p]summary schedule runall` | 手动运行全服务器任务 | `[p]summary schedule runall` |
 
 ### 配置命令
 
@@ -135,8 +175,12 @@
 | `[p]summary config enable` | 启用功能 | - |
 | `[p]summary config disable` | 禁用功能 | - |
 | `[p]summary config apikey` | 设置 API Key | `[p]summary config apikey sk-xxx` |
+| `[p]summary config apibase` | 设置 API Base | `[p]summary config apibase https://...` |
 | `[p]summary config model` | 设置模型 | `[p]summary config model gpt-4` |
 | `[p]summary config maxmessages` | 设置消息数 | `[p]summary config maxmessages 200` |
+| `[p]summary config exclude` | 排除频道 | `[p]summary config exclude #admin` |
+| `[p]summary config excludecategory` | 排除分类 | `[p]summary config excludecategory 管理区` |
+| `[p]summary config includecategory` | 包含分类 | `[p]summary config includecategory 管理区` |
 | `[p]summary config show` | 查看配置 | - |
 
 ## 💰 成本估算（使用 OpenAI API）

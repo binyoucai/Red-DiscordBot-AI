@@ -81,12 +81,31 @@
 ### 排除特定频道
 
 ```bash
-# 排除管理员频道
+# 排除单个频道
 [p]summary config exclude #admin
 [p]summary config exclude #mod-chat
 
 # 排除私密频道
 [p]summary config exclude #staff-only
+
+# 查看当前配置
+[p]summary config show
+```
+
+### 排除整个分类
+
+```bash
+# 排除整个管理员分类（比逐个排除频道更高效）
+[p]summary config excludecategory 管理区
+
+# 排除语音频道文字区
+[p]summary config excludecategory 语音频道
+
+# 排除归档分类
+[p]summary config excludecategory 归档
+
+# 排除未分类的频道
+[p]summary config excludecategory 未分类
 
 # 查看当前配置
 [p]summary config show
@@ -114,6 +133,7 @@
 [p]summary config summarychannel #bot-summaries
 
 # ===== 步骤 3: 配置定时任务 =====
+# 选项 A: 单频道定时任务
 # 主要频道每天总结一次
 [p]summary schedule add #general 24
 [p]summary schedule add #chat 24
@@ -121,9 +141,17 @@
 # 重要频道每12小时总结一次
 [p]summary schedule add #important 12
 
-# ===== 步骤 4: 排除不需要总结的频道 =====
+# 选项 B: 全服务器定时任务（每天总结所有频道）
+[p]summary schedule addall 24
+
+# ===== 步骤 4: 排除不需要总结的频道/分类 =====
+# 排除单个频道
 [p]summary config exclude #admin
 [p]summary config exclude #bot-commands
+
+# 或排除整个分类（更高效）
+[p]summary config excludecategory 管理区
+[p]summary config excludecategory 归档
 
 # ===== 步骤 5: 其他设置 =====
 [p]summary config maxmessages 200
@@ -183,14 +211,86 @@
 [p]summary config maxmessages 50
 ```
 
+## 新功能使用示例
+
+### 全服务器自动总结
+
+```bash
+# 每天自动总结所有频道
+[p]summary schedule addall 24
+
+# 配置总结发送频道
+[p]summary config summarychannel #daily-reports
+
+# 排除不需要的分类
+[p]summary config excludecategory 管理区
+[p]summary config excludecategory 归档
+
+# 立即测试一次
+[p]summary schedule runall
+```
+
+### 按分类管理总结范围
+
+```bash
+# 大型服务器有很多分类，只想总结部分分类
+# 方法：排除不需要的分类
+
+# 排除语音相关分类
+[p]summary config excludecategory 语音频道
+[p]summary config excludecategory 音乐机器人
+
+# 排除归档和临时分类
+[p]summary config excludecategory 归档
+[p]summary config excludecategory 临时频道
+
+# 排除管理分类
+[p]summary config excludecategory 管理区
+[p]summary config excludecategory 审核区
+
+# 查看配置
+[p]summary config show
+
+# 现在只会总结未被排除的分类
+[p]summary all
+```
+
+### 周报/月报自动生成
+
+```bash
+# 每周日晚上自动生成周报（168小时 = 7天）
+[p]summary schedule addall 168
+
+# 配置专门的周报频道
+[p]summary config summarychannel #weekly-reports
+
+# 或者每月生成月报（720小时 = 30天）
+[p]summary schedule addall 720
+```
+
+### 只总结特定分类
+
+```bash
+# 只想看公告相关的内容
+[p]summary category 公告区
+
+# 或者只看聊天区的讨论
+[p]summary category 聊天区
+
+# 定期生成某个分类的报告
+# 可以配合定时任务（暂不支持分类定时任务，但可以手动运行）
+[p]summary category 项目讨论区
+```
+
 ## 最佳实践
 
 1. **API Key 安全**：始终在私聊中配置 API Key
 2. **定时任务设置**：避免设置过短的间隔（建议至少6小时）
-3. **频道排除**：排除管理员和私密频道
+3. **使用分类排除**：优先使用 `excludecategory` 而不是逐个排除频道
 4. **总结频道**：创建专门的频道接收所有总结
 5. **消息数量**：根据频道活跃度调整，活跃频道可以增加到 200-500
 6. **成本控制**：如果使用付费 API，注意控制调用频率
+7. **全服务器任务**：大型服务器使用全服务器定时任务更方便
 
 ## 推荐配置模板
 
