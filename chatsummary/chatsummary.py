@@ -147,7 +147,7 @@ class ChatSummary(commands.Cog):
         return False
     
     async def _execute_all_summary(self, guild: discord.Guild):
-        """执行全服务器总结并发送结果"""
+        """执行全服务器总结并发送结果（包括PDF生成）"""
         try:
             # 按分类分组频道
             categories_dict = defaultdict(list)
@@ -180,6 +180,7 @@ class ChatSummary(commands.Cog):
             await target_channel.send(f"## 📊 服务器全频道总结报告\n生成时间: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
             
             total_channels = 0
+            summaries_data = []  # 收集PDF数据
             
             # 按分类名称排序（"未分类"放在最后）
             sorted_categories = sorted(categories_dict.keys(), key=lambda x: (x == "未分类", x))
@@ -196,6 +197,25 @@ class ChatSummary(commands.Cog):
                         summary_embed = await self.generate_channel_summary(channel)
                         await target_channel.send(embed=summary_embed)
                         total_channels += 1
+                        
+                        # 收集PDF数据
+                        summary_text = summary_embed.description or "无总结内容"
+                        stats = {}
+                        for field in summary_embed.fields:
+                            if "消息数量" in field.name:
+                                stats['message_count'] = field.value
+                            elif "参与人数" in field.name:
+                                stats['user_count'] = field.value
+                            elif "时间范围" in field.name:
+                                stats['time_range'] = field.value
+                        
+                        summaries_data.append({
+                            'category': category_name,
+                            'channel_name': channel.name,
+                            'summary_text': summary_text,
+                            'stats': stats
+                        })
+                        
                         log.info(f"成功总结频道 {channel.name} (分类: {category_name}, Guild: {guild.name})")
                         await asyncio.sleep(1)  # 避免速率限制
                     except Exception as e:
@@ -204,6 +224,27 @@ class ChatSummary(commands.Cog):
             # 发送完成消息
             await target_channel.send(f"✅ 定时总结完成！共总结了 {total_channels} 个频道，分布在 {len(categories_dict)} 个分类中。")
             log.info(f"完成全服务器总结 (Guild: {guild.name}, 总频道数: {total_channels})")
+            
+            # 生成并发送PDF
+            if summaries_data:
+                await target_channel.send("📄 正在生成PDF报告...")
+                report_title = f"{guild.name} - Server Summary Report"
+                pdf_path = await self.generate_pdf_report(guild, summaries_data, report_title)
+                
+                if pdf_path and os.path.exists(pdf_path):
+                    try:
+                        await target_channel.send(
+                            "📊 总结报告PDF文件：",
+                            file=discord.File(pdf_path, filename=f"summary_{guild.name}_{datetime.utcnow().strftime('%Y%m%d')}.pdf")
+                        )
+                        log.info(f"成功发送PDF报告 (Guild: {guild.name})")
+                        # 删除临时文件
+                        os.remove(pdf_path)
+                    except Exception as e:
+                        log.error(f"发送PDF文件时出错: {e}", exc_info=True)
+                        await target_channel.send("❌ PDF文件生成成功但发送失败。")
+                else:
+                    await target_channel.send("❌ PDF文件生成失败。请检查日志。")
             
         except Exception as e:
             log.error(f"执行全服务器总结时出错 (Guild: {guild.name}): {e}", exc_info=True)

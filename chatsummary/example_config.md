@@ -213,10 +213,10 @@
 
 ## 新功能使用示例
 
-### 全服务器自动总结
+### 全服务器自动总结（自动生成PDF）
 
 ```bash
-# 每天自动总结所有频道
+# 每天自动总结所有频道（会自动生成并发送PDF报告）
 [p]summary schedule addall 24
 
 # 配置总结发送频道
@@ -226,7 +226,7 @@
 [p]summary config excludecategory 管理区
 [p]summary config excludecategory 归档
 
-# 立即测试一次
+# 立即测试一次（也会生成PDF）
 [p]summary schedule runall
 ```
 
@@ -255,17 +255,19 @@
 [p]summary all
 ```
 
-### 周报/月报自动生成
+### 周报/月报自动生成（含PDF）
 
 ```bash
-# 每周日晚上自动生成周报（168小时 = 7天）
+# 每周自动生成周报（168小时 = 7天，自动生成PDF）
 [p]summary schedule addall 168
 
 # 配置专门的周报频道
 [p]summary config summarychannel #weekly-reports
 
-# 或者每月生成月报（720小时 = 30天）
+# 或者每月生成月报（720小时 = 30天，自动生成PDF）
 [p]summary schedule addall 720
+
+# 注意：定时任务会自动生成PDF报告并发送到配置的频道
 ```
 
 ### 只总结特定分类
@@ -291,6 +293,7 @@
 5. **消息数量**：根据频道活跃度调整，活跃频道可以增加到 200-500
 6. **成本控制**：如果使用付费 API，注意控制调用频率
 7. **全服务器任务**：大型服务器使用全服务器定时任务更方便
+8. **PDF生成**：定时任务会自动生成PDF报告，确保服务器有足够的存储空间和中文字体支持
 
 ## 推荐配置模板
 
