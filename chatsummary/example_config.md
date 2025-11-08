@@ -132,6 +132,12 @@
 # ===== 步骤 2: 设置总结发送频道 =====
 [p]summary config summarychannel #bot-summaries
 
+# 可选：设置Excel导出文件发送频道（如果不设置，则使用总结频道）
+[p]summary config exportchannel #file-exports
+
+# 可选：设置导出功能的最大消息数
+[p]summary config exportmaxmessages 1000
+
 # ===== 步骤 3: 配置定时任务 =====
 # 选项 A: 单频道定时任务
 # 主要频道每天总结一次
@@ -145,13 +151,17 @@
 [p]summary schedule addall 24
 
 # ===== 步骤 4: 排除不需要总结的频道/分类 =====
-# 排除单个频道
+# 排除单个频道（仅总结功能）
 [p]summary config exclude #admin
 [p]summary config exclude #bot-commands
 
-# 或排除整个分类（更高效）
+# 或排除整个分类（仅总结功能，更高效）
 [p]summary config excludecategory 管理区
 [p]summary config excludecategory 归档
+
+# 可选：单独配置导出功能的排除列表
+[p]summary config exportexclude #admin
+[p]summary config exportexcludecategory 管理区
 
 # ===== 步骤 5: 其他设置 =====
 [p]summary config maxmessages 200
@@ -294,6 +304,160 @@
 6. **成本控制**：如果使用付费 API，注意控制调用频率
 7. **全服务器任务**：大型服务器使用全服务器定时任务更方便
 8. **PDF生成**：定时任务会自动生成PDF报告，确保服务器有足够的存储空间和中文字体支持
+
+## Excel 导出使用示例
+
+### 导出单个频道的完整聊天记录
+
+```bash
+# 导出当前频道的聊天记录
+[p]summary export channel
+
+# 导出指定频道
+[p]summary export channel #general
+
+# 导出最近1000条消息
+[p]summary export channel #general 1000
+```
+
+### 批量导出聊天记录
+
+```bash
+# 导出所有频道到单个Excel文件（推荐，默认模式）
+[p]summary export all
+
+# 导出指定分类到单个Excel文件
+[p]summary export category 公告区
+
+# 导出所有频道到单个Excel文件，每个频道最多500条消息
+[p]summary export all 500
+
+# 导出所有频道，每个频道一个独立的Excel文件（多文件模式）
+[p]summary export all 0 False
+
+# 导出指定分类，每个频道一个独立的Excel文件
+[p]summary export category 聊天区 0 False
+```
+
+### Excel 表格特性
+
+**单文件导出模式**（推荐）：
+- 所有频道合并到一个Excel文件
+- 第一个工作表：汇总统计信息
+  - 服务器名称、报告标题
+  - 总频道数、总消息数
+  - 每个频道的详细统计表格
+- 后续工作表：每个频道一个Sheet
+  - 包含14列详细聊天记录
+  - 自动调整列宽
+  - 冻结首行便于浏览
+
+**单频道导出**：
+导出的Excel文件包含两个工作表：
+
+1. **聊天记录工作表**：
+   - 包含14列详细信息
+   - 自动调整列宽以适应内容
+   - 冻结首行便于浏览
+   - 消息按时间顺序排列
+
+2. **统计信息工作表**：
+   - 频道基本信息
+   - 消息统计数据
+   - 用户参与情况
+   - 生成时间等
+
+### 常见使用场景
+
+```bash
+# 场景1: 导出重要公告频道作为备份
+[p]summary export channel #announcements
+
+# 场景2: 导出某个项目讨论分类的完整记录（单文件）
+[p]summary export category 项目讨论
+
+# 场景3: 月度归档 - 导出所有频道到单个Excel文件
+[p]summary export all
+
+# 场景4: 导出活跃频道的最近聊天
+[p]summary export channel #chat 1000
+
+# 场景5: 按分类整理归档（每个分类一个Excel文件）
+[p]summary export category 公告区
+[p]summary export category 聊天区
+[p]summary export category 技术讨论
+
+# 场景6: 需要分发给不同人员（多文件模式）
+[p]summary export category 项目A 0 False
+```
+
+## Excel 导出定时任务使用示例
+
+### 设置自动备份
+
+```bash
+# 每天自动导出所有频道到单个Excel文件
+[p]summary export schedule addall 24
+
+# 配置导出文件发送频道
+[p]summary config summarychannel #backups
+
+# 立即测试一次
+[p]summary export schedule run export_all
+```
+
+### 分类定时导出
+
+```bash
+# 每周导出"公告区"分类
+[p]summary export schedule addcategory 公告区 168
+
+# 每天导出"项目讨论"分类，每个频道最多1000条消息
+[p]summary export schedule addcategory 项目讨论 24 True 1000
+
+# 每月导出"归档"分类
+[p]summary export schedule addcategory 归档 720
+```
+
+### 频道定时导出
+
+```bash
+# 每12小时导出支持频道
+[p]summary export schedule addchannel #support 12
+
+# 每天导出重要频道
+[p]summary export schedule addchannel #important 24 500
+```
+
+### 查看和管理任务
+
+```bash
+# 查看所有导出定时任务
+[p]summary export schedule list
+
+# 移除不需要的任务
+[p]summary export schedule remove export_cat_归档
+
+# 手动执行指定任务
+[p]summary export schedule run export_all
+```
+
+### 企业级备份方案
+
+```bash
+# 每周完整备份（单文件模式，便于归档）
+[p]summary export schedule addall 168
+
+# 每天增量备份重要分类
+[p]summary export schedule addcategory 重要文档 24
+[p]summary export schedule addcategory 项目讨论 24
+
+# 每小时备份实时支持频道
+[p]summary export schedule addchannel #support 1 500
+
+# 配置备份文件接收频道
+[p]summary config summarychannel #server-backups
+```
 
 ## 推荐配置模板
 
